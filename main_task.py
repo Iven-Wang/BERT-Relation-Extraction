@@ -9,6 +9,8 @@ from src.tasks.trainer import train_and_fit
 from src.tasks.infer import infer_from_trained, FewRel
 import logging
 from argparse import ArgumentParser
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 
 '''
 This fine-tunes the BERT model on SemEval, FewRel tasks
@@ -27,7 +29,7 @@ if __name__ == "__main__":
                         help="test data .txt file path")
     parser.add_argument("--use_pretrained_blanks", type=int, default=0, help="0: Don't use pre-trained blanks model, 1: use pre-trained blanks model")
     parser.add_argument("--num_classes", type=int, default=19, help='number of relation classes')
-    parser.add_argument("--batch_size", type=int, default=32, help="Training batch size")
+    parser.add_argument("--batch_size", type=int, default=64, help="Training batch size")
     parser.add_argument("--gradient_acc_steps", type=int, default=2, help="No. of steps of gradient accumulation")
     parser.add_argument("--max_norm", type=float, default=1.0, help="Clipped gradient norm")
     parser.add_argument("--fp16", type=int, default=0, help="1: use mixed precision ; 0: use floating point 32") # mixed precision doesn't seem to train well

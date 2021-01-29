@@ -41,7 +41,8 @@ class infer_from_trained(object):
         self.detect_entities = detect_entities
         
         if self.detect_entities:
-            self.nlp = spacy.load("en_core_web_lg")
+            # self.nlp = spacy.load("en_core_web_lg")
+            self.nlp = spacy.load("en_core_web_sm-2.2.5/en_core_web_sm/en_core_web_sm-2.2.5")
         else:
             self.nlp = None
         self.entities_of_interest = ["PERSON", "NORP", "FAC", "ORG", "GPE", "LOC", "PRODUCT", "EVENT", \
@@ -55,7 +56,8 @@ class infer_from_trained(object):
             model = args.model_size #'bert-base-uncased'
             lower_case = True
             model_name = 'BERT'
-            self.net = Model.from_pretrained(model, force_download=False, \
+            # self.net = Model.from_pretrained(model, force_download=False, \
+            self.net = Model.from_pretrained(pretrained_model_name_or_path='/home/diske/ivenwang/data/prev_trained_model/bert-base-uncased/', force_download=False, \
                                          model_size=args.model_size,\
                                          task='classification', n_classes_=self.args.num_classes)
         elif self.args.model_no == 1:

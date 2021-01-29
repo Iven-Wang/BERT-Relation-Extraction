@@ -39,7 +39,8 @@ def train_and_fit(args):
         model = args.model_size #'bert-base-uncased'
         lower_case = True
         model_name = 'BERT'
-        net = Model.from_pretrained(model, force_download=False, \
+        # net = Model.from_pretrained(model, force_download=False, \
+        net = Model.from_pretrained(pretrained_model_name_or_path='/home/diske/ivenwang/data/prev_trained_model/bert-base-uncased-pytorch_model.bin', force_download=False, \
                                 model_size=args.model_size)
     elif args.model_no == 1:
         from .model.ALBERT.modeling_albert import AlbertModel as Model

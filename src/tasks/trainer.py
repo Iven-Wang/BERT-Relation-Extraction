@@ -38,7 +38,9 @@ def train_and_fit(args):
         model = args.model_size #'bert-base-uncased'
         lower_case = True
         model_name = 'BERT'
-        net = Model.from_pretrained(model, force_download=False, \
+        # net = Model.from_pretrained(model, force_download=False, \
+        print(1)
+        net = Model.from_pretrained(pretrained_model_name_or_path='/home/diske/ivenwang/data/prev_trained_model/bert-base-uncased/', force_download=False, \
                                 model_size=args.model_size,
                                 task='classification' if args.task != 'fewrel' else 'fewrel',\
                                 n_classes_=args.num_classes)

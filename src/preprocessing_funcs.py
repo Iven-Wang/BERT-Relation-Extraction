@@ -7,14 +7,14 @@ Created on Tue Nov 26 18:12:22 2019
 """
 import os
 import re
-import spacy
-import math
-import numpy as np
+import random
+import copy
 import pandas as pd
+import json
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
-from .misc import save_as_pickle, load_pickle, get_subject_objects
+from ..misc import save_as_pickle, load_pickle
 from tqdm import tqdm
 import logging
 
@@ -23,357 +23,85 @@ logging.basicConfig(format='%(asctime)s [%(levelname)s]: %(message)s', \
                     datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.INFO)
 logger = logging.getLogger('__file__')
 
-
-def process_sent(sent):
-    if sent not in [" ", "\n", ""]:
-        sent = sent.strip("\n")            
-        sent = re.sub('<[A-Z]+/*>', '', sent) # remove special tokens eg. <FIL/>, <S>
-        sent = re.sub(r"[\*\"\n\\…\+\-\/\=\(\)‘•€\[\]\|♫:;—”“~`#]", " ", sent)
-        sent = re.sub(' {2,}', ' ', sent) # remove extra spaces > 1
-        sent = re.sub("^ +", "", sent) # remove space in front
-        sent = re.sub(r"([\.\?,!]){2,}", r"\1", sent) # remove multiple puncs
-        sent = re.sub(r" +([\.\?,!])", r"\1", sent) # remove extra spaces in front of punc
-        #sent = re.sub(r"([A-Z]{2,})", lambda x: x.group(1).capitalize(), sent) # Replace all CAPS with capitalize
-        return sent
-    return
-
-def process_textlines(text):
-    text = [process_sent(sent) for sent in text]
-    text = " ".join([t for t in text if t is not None])
-    text = re.sub(' {2,}', ' ', text) # remove extra spaces > 1
-    return text    
-
-def create_pretraining_corpus(raw_text, nlp, window_size=40):
-    '''
-    Input: Chunk of raw text
-    Output: modified corpus of triplets (relation statement, entity1, entity2)
-    '''
-    logger.info("Processing sentences...")
-    sents_doc = nlp(raw_text)
-    ents = sents_doc.ents # get entities
-    
-    logger.info("Processing relation statements by entities...")
-    entities_of_interest = ["PERSON", "NORP", "FAC", "ORG", "GPE", "LOC", "PRODUCT", "EVENT", \
-                            "WORK_OF_ART", "LAW", "LANGUAGE"]
-    length_doc = len(sents_doc)
-    D = []; ents_list = []
-    for i in tqdm(range(len(ents))):
-        e1 = ents[i]
-        e1start = e1.start; e1end = e1.end
-        if e1.label_ not in entities_of_interest:
-            continue
-        if re.search("[\d+]", e1.text): # entities should not contain numbers
-            continue
+def process_text(text, mode='train'):
+    sents, relations, comments, blanks = [], [], [], []
+    for i in range(int(len(text)/4)):
+        sent = text[4*i]
+        relation = text[4*i + 1]
+        comment = text[4*i + 2]
+        blank = text[4*i + 3]
         
-        for j in range(1, len(ents) - i):
-            e2 = ents[i + j]
-            e2start = e2.start; e2end = e2.end
-            if e2.label_ not in entities_of_interest:
-                continue
-            if re.search("[\d+]", e2.text): # entities should not contain numbers
-                continue
-            if e1.text.lower() == e2.text.lower(): # make sure e1 != e2
-                continue
-            
-            if (1 <= (e2start - e1end) <= window_size): # check if next nearest entity within window_size
-                # Find start of sentence
-                punc_token = False
-                start = e1start - 1
-                if start > 0:
-                    while not punc_token:
-                        punc_token = sents_doc[start].is_punct
-                        start -= 1
-                        if start < 0:
-                            break
-                    left_r = start + 2 if start > 0 else 0
-                else:
-                    left_r = 0
-                
-                # Find end of sentence
-                punc_token = False
-                start = e2end
-                if start < length_doc:
-                    while not punc_token:
-                        punc_token = sents_doc[start].is_punct
-                        start += 1
-                        if start == length_doc:
-                            break
-                    right_r = start if start < length_doc else length_doc
-                else:
-                    right_r = length_doc
-                
-                if (right_r - left_r) > window_size: # sentence should not be longer than window_size
-                    continue
-                
-                x = [token.text for token in sents_doc[left_r:right_r]]
-                
-                ### empty strings check ###
-                for token in x:
-                    assert len(token) > 0
-                assert len(e1.text) > 0
-                assert len(e2.text) > 0
-                assert e1start != e1end
-                assert e2start != e2end
-                assert (e2start - e1end) > 0
-                
-                r = (x, (e1start - left_r, e1end - left_r), (e2start - left_r, e2end - left_r))
-                D.append((r, e1.text, e2.text))
-                ents_list.append((e1.text, e2.text))
-                #print(e1.text,",", e2.text)
-    print("Processed dataset samples from named entity extraction:")
-    samples_D_idx = np.random.choice([idx for idx in range(len(D))],\
-                                      size=min(3, len(D)),\
-                                      replace=False)
-    for idx in samples_D_idx:
-        print(D[idx], '\n')
-    ref_D = len(D)
-    
-    logger.info("Processing relation statements by dependency tree parsing...")
-    doc_sents = [s for s in sents_doc.sents]
-    for sent_ in tqdm(doc_sents, total=len(doc_sents)):
-        if len(sent_) > (window_size + 1):
-            continue
-        
-        left_r = sent_[0].i
-        pairs = get_subject_objects(sent_)
-        
-        if len(pairs) > 0:
-            for pair in pairs:
-                e1, e2 = pair[0], pair[1]
-                
-                if (len(e1) > 3) or (len(e2) > 3): # don't want entities that are too long
-                    continue
-                
-                e1text, e2text = " ".join(w.text for w in e1) if isinstance(e1, list) else e1.text,\
-                                    " ".join(w.text for w in e2) if isinstance(e2, list) else e2.text
-                e1start, e1end = e1[0].i if isinstance(e1, list) else e1.i, e1[-1].i + 1 if isinstance(e1, list) else e1.i + 1
-                e2start, e2end = e2[0].i if isinstance(e2, list) else e2.i, e2[-1].i + 1 if isinstance(e2, list) else e2.i + 1
-                if (e1end < e2start) and ((e1text, e2text) not in ents_list):
-                    assert e1start != e1end
-                    assert e2start != e2end
-                    assert (e2start - e1end) > 0
-                    r = ([w.text for w in sent_], (e1start - left_r, e1end - left_r), (e2start - left_r, e2end - left_r))
-                    D.append((r, e1text, e2text))
-                    ents_list.append((e1text, e2text))
-    
-    print("Processed dataset samples from dependency tree parsing:")
-    if (len(D) - ref_D) > 0:
-        samples_D_idx = np.random.choice([idx for idx in range(ref_D, len(D))],\
-                                          size=min(3,(len(D) - ref_D)),\
-                                          replace=False)
-        for idx in samples_D_idx:
-            print(D[idx], '\n')
-    return D
-
-class pretrain_dataset(Dataset):
-    def __init__(self, args, D, batch_size=None):
-        self.internal_batching = True
-        self.batch_size = batch_size # batch_size cannot be None if internal_batching == True
-        self.alpha = 0.7
-        self.mask_probability = 0.15
-        
-        self.df = pd.DataFrame(D, columns=['r','e1','e2'])
-        self.e1s = list(self.df['e1'].unique())
-        self.e2s = list(self.df['e2'].unique())
-        
-        if args.model_no == 0:
-            from .model.BERT.tokenization_bert import BertTokenizer as Tokenizer
-            model = args.model_size #'bert-base-uncased'
-            lower_case = True
-            model_name = 'BERT'
-        elif args.model_no == 1:
-            from .model.ALBERT.tokenization_albert import AlbertTokenizer as Tokenizer
-            model = args.model_size #'albert-base-v2'
-            lower_case = False
-            model_name = 'ALBERT'
-        elif args.model_no == 2:
-            from .model.BERT.tokenization_bert import BertTokenizer as Tokenizer
-            model = 'bert-base-uncased'
-            lower_case = False
-            model_name = 'BioBERT'
-        
-        tokenizer_path = './data/%s_tokenizer.pkl' % (model_name)
-        if os.path.isfile(tokenizer_path):
-            self.tokenizer = load_pickle('%s_tokenizer.pkl' % (model_name))
-            logger.info("Loaded tokenizer from saved path.")
+        # check entries
+        if mode == 'train':
+            assert int(re.match("^\d+", sent)[0]) == (i + 1)
         else:
-            if args.model_no == 2:
-                self.tokenizer = Tokenizer(vocab_file='./additional_models/biobert_v1.1_pubmed/vocab.txt',
-                                           do_lower_case=False)
-            else:
-                self.tokenizer = Tokenizer.from_pretrained(model, do_lower_case=False)
-            self.tokenizer.add_tokens(['[E1]', '[/E1]', '[E2]', '[/E2]', '[BLANK]'])
-            save_as_pickle("%s_tokenizer.pkl" % (model_name), self.tokenizer)
-            logger.info("Saved %s tokenizer at ./data/%s_tokenizer.pkl" % (model_name, model_name))
+            assert (int(re.match("^\d+", sent)[0]) - 8000) == (i + 1)
+        assert re.match("^Comment", comment)
+        assert len(blank) == 1
         
-        e1_id = self.tokenizer.convert_tokens_to_ids('[E1]')
-        e2_id = self.tokenizer.convert_tokens_to_ids('[E2]')
-        assert e1_id != e2_id != 1
-            
-        self.cls_token = self.tokenizer.cls_token
-        self.sep_token = self.tokenizer.sep_token
-        self.E1_token_id = self.tokenizer.encode("[E1]")[1:-1][0]
-        self.E1s_token_id = self.tokenizer.encode("[/E1]")[1:-1][0]
-        self.E2_token_id = self.tokenizer.encode("[E2]")[1:-1][0]
-        self.E2s_token_id = self.tokenizer.encode("[/E2]")[1:-1][0]
-        self.PS = Pad_Sequence(seq_pad_value=self.tokenizer.pad_token_id,\
-                               label_pad_value=self.tokenizer.pad_token_id,\
-                               label2_pad_value=-1,\
-                               label3_pad_value=-1,\
-                               label4_pad_value=-1)
-        
-    def put_blanks(self, D):
-        blank_e1 = np.random.uniform()
-        blank_e2 = np.random.uniform()
-        if blank_e1 >= self.alpha:
-            r, e1, e2 = D
-            D = (r, "[BLANK]", e2)
-        
-        if blank_e2 >= self.alpha:
-            r, e1, e2 = D
-            D = (r, e1, "[BLANK]")
-        return D
-        
-    def tokenize(self, D):
-        (x, s1, s2), e1, e2 = D
-        x = [w.lower() for w in x if x != '[BLANK]'] # we are using uncased model
-        
-        ### Include random masks for MLM training
-        forbidden_idxs = [i for i in range(s1[0], s1[1])] + [i for i in range(s2[0], s2[1])]
-        pool_idxs = [i for i in range(len(x)) if i not in forbidden_idxs]
-        masked_idxs = np.random.choice(pool_idxs,\
-                                        size=round(self.mask_probability*len(pool_idxs)),\
-                                        replace=False)
-        masked_for_pred = [token.lower() for idx, token in enumerate(x) if (idx in masked_idxs)]
-        #masked_for_pred = [w.lower() for w in masked_for_pred] # we are using uncased model
-        x = [token if (idx not in masked_idxs) else self.tokenizer.mask_token \
-             for idx, token in enumerate(x)]
+        sent = re.findall("\"(.+)\"", sent)[0]
+        sent = re.sub('<e1>', '[E1]', sent)
+        sent = re.sub('</e1>', '[/E1]', sent)
+        sent = re.sub('<e2>', '[E2]', sent)
+        sent = re.sub('</e2>', '[/E2]', sent)
+        sents.append(sent); relations.append(relation), comments.append(comment); blanks.append(blank)
+    return sents, relations, comments, blanks
 
-        ### replace x spans with '[BLANK]' if e is '[BLANK]'
-        if (e1 == '[BLANK]') and (e2 != '[BLANK]'):
-            x = [self.cls_token] + x[:s1[0]] + ['[E1]' ,'[BLANK]', '[/E1]'] + \
-                x[s1[1]:s2[0]] + ['[E2]'] + x[s2[0]:s2[1]] + ['[/E2]'] + x[s2[1]:] + [self.sep_token]
-        
-        elif (e1 == '[BLANK]') and (e2 == '[BLANK]'):
-            x = [self.cls_token] + x[:s1[0]] + ['[E1]' ,'[BLANK]', '[/E1]'] + \
-                x[s1[1]:s2[0]] + ['[E2]', '[BLANK]', '[/E2]'] + x[s2[1]:] + [self.sep_token]
-        
-        elif (e1 != '[BLANK]') and (e2 == '[BLANK]'):
-            x = [self.cls_token] + x[:s1[0]] + ['[E1]'] + x[s1[0]:s1[1]] + ['[/E1]'] + \
-                x[s1[1]:s2[0]] + ['[E2]', '[BLANK]', '[/E2]'] + x[s2[1]:] + [self.sep_token]
-        
-        elif (e1 != '[BLANK]') and (e2 != '[BLANK]'):
-            x = [self.cls_token] + x[:s1[0]] + ['[E1]'] + x[s1[0]:s1[1]] + ['[/E1]'] + \
-                x[s1[1]:s2[0]] + ['[E2]'] + x[s2[0]:s2[1]] + ['[/E2]'] + x[s2[1]:] + [self.sep_token]
+def preprocess_semeval2010_8(args):
+    '''
+    Data preprocessing for SemEval2010 task 8 dataset
+    '''
+    data_path = args.train_data #'./data/SemEval2010_task8_all_data/SemEval2010_task8_training/TRAIN_FILE.TXT'
+    logger.info("Reading training file %s..." % data_path)
+    with open(data_path, 'r', encoding='utf8') as f:
+        text = f.readlines()
+    
+    sents, relations, comments, blanks = process_text(text, 'train')
+    df_train = pd.DataFrame(data={'sents': sents, 'relations': relations})
+    
+    data_path = args.test_data #'./data/SemEval2010_task8_all_data/SemEval2010_task8_testing_keys/TEST_FILE_FULL.TXT'
+    logger.info("Reading test file %s..." % data_path)
+    with open(data_path, 'r', encoding='utf8') as f:
+        text = f.readlines()
+    
+    sents, relations, comments, blanks = process_text(text, 'test')
+    df_test = pd.DataFrame(data={'sents': sents, 'relations': relations})
+    
+    rm = Relations_Mapper(df_train['relations'])
+    save_as_pickle('relations.pkl', rm)
+    df_test['relations_id'] = df_test.progress_apply(lambda x: rm.rel2idx[x['relations']], axis=1)
+    df_train['relations_id'] = df_train.progress_apply(lambda x: rm.rel2idx[x['relations']], axis=1)
+    save_as_pickle('df_train.pkl', df_train)
+    save_as_pickle('df_test.pkl', df_test)
+    logger.info("Finished and saved!")
+    
+    return df_train, df_test, rm
 
-        e1_e2_start = ([i for i, e in enumerate(x) if e == '[E1]'][0],\
-                        [i for i, e in enumerate(x) if e == '[E2]'][0])
+class Relations_Mapper(object):
+    def __init__(self, relations):
+        self.rel2idx = {}
+        self.idx2rel = {}
         
-        x = self.tokenizer.convert_tokens_to_ids(x)
-        masked_for_pred = self.tokenizer.convert_tokens_to_ids(masked_for_pred)
-        '''
-        e1 = [e for idx, e in enumerate(x) if idx in [i for i in\
-              range(x.index(self.E1_token_id) + 1, x.index(self.E1s_token_id))]]
-        e2 = [e for idx, e in enumerate(x) if idx in [i for i in\
-              range(x.index(self.E2_token_id) + 1, x.index(self.E2s_token_id))]]
-        '''
-        return x, masked_for_pred, e1_e2_start #, e1, e2
-    
-    def __len__(self):
-        return len(self.df)
-    
-    def __getitem__(self, idx):
-        ### implements standard batching
-        if not self.internal_batching:
-            r, e1, e2 = self.df.iloc[idx]
-            x, masked_for_pred, e1_e2_start = self.tokenize(self.put_blanks((r, e1, e2)))
-            x = torch.tensor(x)
-            masked_for_pred = torch.tensor(masked_for_pred)
-            e1_e2_start = torch.tensor(e1_e2_start)
-            #e1, e2 = torch.tensor(e1), torch.tensor(e2)
-            return x, masked_for_pred, e1_e2_start, e1, e2
+        logger.info("Mapping relations to IDs...")
+        self.n_classes = 0
+        for relation in tqdm(relations):
+            if relation not in self.rel2idx.keys():
+                self.rel2idx[relation] = self.n_classes
+                self.n_classes += 1
         
-        ### implements noise contrastive estimation
-        else:
-            ### get positive samples
-            r, e1, e2 = self.df.iloc[idx] # positive sample
-            pool = self.df[((self.df['e1'] == e1) & (self.df['e2'] == e2))].index
-            pool = pool.append(self.df[((self.df['e1'] == e2) & (self.df['e2'] == e1))].index)
-            pos_idxs = np.random.choice(pool, \
-                                        size=min(int(self.batch_size//2), len(pool)), replace=False)
-            ### get negative samples
-            '''
-            choose from option: 
-            1) sampling uniformly from all negatives
-            2) sampling uniformly from negatives that share e1 or e2
-            '''
-            if np.random.uniform() > 0.5:   
-                pool = self.df[((self.df['e1'] != e1) | (self.df['e2'] != e2))].index
-                neg_idxs = np.random.choice(pool, \
-                                            size=min(int(self.batch_size//2), len(pool)), replace=False)
-                Q = 1/len(pool)
-            
-            else:
-                if np.random.uniform() > 0.5: # share e1 but not e2
-                    pool = self.df[((self.df['e1'] == e1) & (self.df['e2'] != e2))].index
-                    if len(pool) > 0:
-                        neg_idxs = np.random.choice(pool, \
-                                                    size=min(int(self.batch_size//2), len(pool)), replace=False)
-                    else:
-                        neg_idxs = []
+        for key, value in self.rel2idx.items():
+            self.idx2rel[value] = key
 
-                else: # share e2 but not e1
-                    pool = self.df[((self.df['e1'] != e1) & (self.df['e2'] == e2))].index
-                    if len(pool) > 0:
-                        neg_idxs = np.random.choice(pool, \
-                                                    size=min(int(self.batch_size//2), len(pool)), replace=False)
-                    else:
-                        neg_idxs = []
-                        
-                if len(neg_idxs) == 0: # if empty, sample from all negatives
-                    pool = self.df[((self.df['e1'] != e1) | (self.df['e2'] != e2))].index
-                    neg_idxs = np.random.choice(pool, \
-                                            size=min(int(self.batch_size//2), len(pool)), replace=False)
-                Q = 1/len(pool)
-            
-            batch = []
-            ## process positive sample
-            pos_df = self.df.loc[pos_idxs]
-            for idx, row in pos_df.iterrows():
-                r, e1, e2 = row[0], row[1], row[2]
-                x, masked_for_pred, e1_e2_start = self.tokenize(self.put_blanks((r, e1, e2)))
-                x = torch.LongTensor(x)
-                masked_for_pred = torch.LongTensor(masked_for_pred)
-                e1_e2_start = torch.tensor(e1_e2_start)
-                #e1, e2 = torch.tensor(e1), torch.tensor(e2)
-                batch.append((x, masked_for_pred, e1_e2_start, torch.FloatTensor([1.0]),\
-                              torch.LongTensor([1])))
-            
-            ## process negative samples
-            negs_df = self.df.loc[neg_idxs]
-            for idx, row in negs_df.iterrows():
-                r, e1, e2 = row[0], row[1], row[2]
-                x, masked_for_pred, e1_e2_start = self.tokenize(self.put_blanks((r, e1, e2)))
-                x = torch.LongTensor(x)
-                masked_for_pred = torch.LongTensor(masked_for_pred)
-                e1_e2_start = torch.tensor(e1_e2_start)
-                #e1, e2 = torch.tensor(e1), torch.tensor(e2)
-                batch.append((x, masked_for_pred, e1_e2_start, torch.FloatTensor([Q]), torch.LongTensor([0])))
-            batch = self.PS(batch)
-            return batch
-    
 class Pad_Sequence():
     """
     collate_fn for dataloader to collate sequences of different lengths into a fixed length batch
     Returns padded x sequence, y sequence, x lengths and y lengths of batch
     """
-    def __init__(self, seq_pad_value, label_pad_value=1, label2_pad_value=-1,\
-                 label3_pad_value=-1, label4_pad_value=-1):
+    def __init__(self, seq_pad_value, label_pad_value=-1, label2_pad_value=-1,\
+                 ):
         self.seq_pad_value = seq_pad_value
         self.label_pad_value = label_pad_value
         self.label2_pad_value = label2_pad_value
-        self.label3_pad_value = label3_pad_value
-        self.label4_pad_value = label4_pad_value
         
     def __call__(self, batch):
         sorted_batch = sorted(batch, key=lambda x: x[0].shape[0], reverse=True)
@@ -384,60 +112,247 @@ class Pad_Sequence():
         labels = list(map(lambda x: x[1], sorted_batch))
         labels_padded = pad_sequence(labels, batch_first=True, padding_value=self.label_pad_value)
         y_lengths = torch.LongTensor([len(x) for x in labels])
-        
+
         labels2 = list(map(lambda x: x[2], sorted_batch))
         labels2_padded = pad_sequence(labels2, batch_first=True, padding_value=self.label2_pad_value)
         y2_lengths = torch.LongTensor([len(x) for x in labels2])
         
-        labels3 = list(map(lambda x: x[3], sorted_batch))
-        labels3_padded = pad_sequence(labels3, batch_first=True, padding_value=self.label3_pad_value)
-        y3_lengths = torch.LongTensor([len(x) for x in labels3])
-        
-        labels4 = list(map(lambda x: x[4], sorted_batch))
-        labels4_padded = pad_sequence(labels4, batch_first=True, padding_value=self.label4_pad_value)
-        y4_lengths = torch.LongTensor([len(x) for x in labels4])
-        return seqs_padded, labels_padded, labels2_padded, labels3_padded, labels4_padded,\
-                x_lengths, y_lengths, y2_lengths, y3_lengths, y4_lengths
+        return seqs_padded, labels_padded, labels2_padded, \
+                x_lengths, y_lengths, y2_lengths
 
-def load_dataloaders(args, max_length=50000):
+def get_e1e2_start(x, e1_id, e2_id):
+    try:
+        e1_e2_start = ([i for i, e in enumerate(x) if e == e1_id][0],\
+                        [i for i, e in enumerate(x) if e == e2_id][0])
+    except Exception as e:
+        e1_e2_start = None
+        print(e)
+    return e1_e2_start
+
+class semeval_dataset(Dataset):
+    def __init__(self, df, tokenizer, e1_id, e2_id):
+        self.e1_id = e1_id
+        self.e2_id = e2_id
+        self.df = df
+        logger.info("Tokenizing data...")
+        self.df['input'] = self.df.progress_apply(lambda x: tokenizer.encode(x['sents']),\
+                                                             axis=1)
+        
+        self.df['e1_e2_start'] = self.df.progress_apply(lambda x: get_e1e2_start(x['input'],\
+                                                       e1_id=self.e1_id, e2_id=self.e2_id), axis=1)
+        print("\nInvalid rows/total: %d/%d" % (df['e1_e2_start'].isnull().sum(), len(df)))
+        self.df.dropna(axis=0, inplace=True)
     
-    if not os.path.isfile("./data/D.pkl"):
-        logger.info("Loading pre-training data...")
-        with open(args.pretrain_data, "r", encoding="utf8") as f:
-            text = f.readlines()
+    def __len__(self,):
+        return len(self.df)
         
-        #text = text[:1500] # restrict size for testing
-        text = process_textlines(text)
+    def __getitem__(self, idx):
+        return torch.LongTensor(self.df.iloc[idx]['input']),\
+                torch.LongTensor(self.df.iloc[idx]['e1_e2_start']),\
+                torch.LongTensor([self.df.iloc[idx]['relations_id']])
+
+def preprocess_fewrel(args, do_lower_case=True):
+    '''
+    train: train_wiki.json
+    test: val_wiki.json
+    For 5 way 1 shot
+    '''
+    def process_data(data_dict):
+        sents = []
+        labels = []
+        for relation, dataset in data_dict.items():
+            for data in dataset:
+                # first, get & verify the positions of entities
+                h_pos, t_pos = data['h'][-1], data['t'][-1]
+                
+                if not len(h_pos) == len(t_pos) == 1: # remove one-to-many relation mappings
+                    continue
+                
+                h_pos, t_pos = h_pos[0], t_pos[0]
+                
+                if len(h_pos) > 1:
+                    running_list = [i for i in range(min(h_pos), max(h_pos) + 1)]
+                    assert h_pos == running_list
+                    h_pos = [h_pos[0], h_pos[-1] + 1]
+                else:
+                    h_pos.append(h_pos[0] + 1)
+                
+                if len(t_pos) > 1:
+                    running_list = [i for i in range(min(t_pos), max(t_pos) + 1)]
+                    assert t_pos == running_list
+                    t_pos = [t_pos[0], t_pos[-1] + 1]
+                else:
+                    t_pos.append(t_pos[0] + 1)
+                
+                if (t_pos[0] <= h_pos[-1] <= t_pos[-1]) or (h_pos[0] <= t_pos[-1] <= h_pos[-1]): # remove entities not separated by at least one token 
+                    continue
+                
+                if do_lower_case:
+                    data['tokens'] = [token.lower() for token in data['tokens']]
+                
+                # add entity markers
+                if h_pos[-1] < t_pos[0]:
+                    tokens = data['tokens'][:h_pos[0]] + ['[E1]'] + data['tokens'][h_pos[0]:h_pos[1]] \
+                            + ['[/E1]'] + data['tokens'][h_pos[1]:t_pos[0]] + ['[E2]'] + \
+                            data['tokens'][t_pos[0]:t_pos[1]] + ['[/E2]'] + data['tokens'][t_pos[1]:]
+                else:
+                    tokens = data['tokens'][:t_pos[0]] + ['[E2]'] + data['tokens'][t_pos[0]:t_pos[1]] \
+                            + ['[/E2]'] + data['tokens'][t_pos[1]:h_pos[0]] + ['[E1]'] + \
+                            data['tokens'][h_pos[0]:h_pos[1]] + ['[/E1]'] + data['tokens'][h_pos[1]:]
+                
+                assert len(tokens) == (len(data['tokens']) + 4)
+                sents.append(tokens)
+                labels.append(relation)
+        return sents, labels
         
-        logger.info("Length of text (characters): %d" % len(text))
-        num_chunks = math.ceil(len(text)/max_length)
-        logger.info("Splitting into %d max length chunks of size %d" % (num_chunks, max_length))
-        text_chunks = (text[i*max_length:(i*max_length + max_length)] for i in range(num_chunks))
+    with open('./data/fewrel/train_wiki.json') as f:
+        train_data = json.load(f)
         
-        D = []
-        logger.info("Loading Spacy NLP...")
-        nlp = spacy.load("en_core_web_lg")
+    with  open('./data/fewrel/val_wiki.json') as f:
+        test_data = json.load(f)
+    
+    train_sents, train_labels = process_data(train_data)
+    test_sents, test_labels = process_data(test_data)
+    
+    df_train = pd.DataFrame(data={'sents': train_sents, 'labels': train_labels})
+    df_test = pd.DataFrame(data={'sents': test_sents, 'labels': test_labels})
+    
+    rm = Relations_Mapper(list(df_train['labels'].unique()))
+    save_as_pickle('relations.pkl', rm)
+    df_train['labels'] = df_train.progress_apply(lambda x: rm.rel2idx[x['labels']], axis=1)
+    
+    return df_train, df_test
+
+class fewrel_dataset(Dataset):
+    def __init__(self, df, tokenizer, seq_pad_value, e1_id, e2_id):
+        self.e1_id = e1_id
+        self.e2_id = e2_id
+        self.N = 5
+        self.K = 1
+        self.df = df
         
-        for text_chunk in tqdm(text_chunks, total=num_chunks):
-            D.extend(create_pretraining_corpus(text_chunk, nlp, window_size=40))
+        logger.info("Tokenizing data...")
+        self.df['sents'] = self.df.progress_apply(lambda x: tokenizer.encode(" ".join(x['sents'])),\
+                                      axis=1)
+        self.df['e1_e2_start'] = self.df.progress_apply(lambda x: get_e1e2_start(x['sents'],\
+                                                       e1_id=self.e1_id, e2_id=self.e2_id), axis=1)
+        print("\nInvalid rows/total: %d/%d" % (self.df['e1_e2_start'].isnull().sum(), len(self.df)))
+        self.df.dropna(axis=0, inplace=True)
+        
+        self.relations = list(self.df['labels'].unique())
+        
+        self.seq_pad_value = seq_pad_value
             
-        logger.info("Total number of relation statements in pre-training corpus: %d" % len(D))
-        save_as_pickle("D.pkl", D)
-        logger.info("Saved pre-training corpus to %s" % "./data/D.pkl")
-    else:
-        logger.info("Loaded pre-training data from saved file")
-        D = load_pickle("D.pkl")
+    def __len__(self,):
+        return len(self.df)
+    
+    def __getitem__(self, idx):
+        target_relation = self.df['labels'].iloc[idx]
+        relations_pool = copy.deepcopy(self.relations)
+        relations_pool.remove(target_relation)
+        sampled_relation = random.sample(relations_pool, self.N - 1)
+        sampled_relation.append(target_relation)
         
-    train_set = pretrain_dataset(args, D, batch_size=args.batch_size)
-    train_length = len(train_set)
-    '''
-    # if using fixed batching
-    PS = Pad_Sequence(seq_pad_value=train_set.tokenizer.pad_token_id,\
-                      label_pad_value=train_set.tokenizer.pad_token_id,\
-                      label2_pad_value=-1,\
-                      label3_pad_value=-1,\
-                      label4_pad_value=-1)
-    train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, \
-                              num_workers=0, collate_fn=PS, pin_memory=False)
-    '''
-    return train_set
+        target_idx = self.N - 1
+    
+        e1_e2_start = []
+        meta_train_input, meta_train_labels = [], []
+        for sample_idx, r in enumerate(sampled_relation):
+            filtered_samples = self.df[self.df['labels'] == r][['sents', 'e1_e2_start', 'labels']]
+            sampled_idxs = random.sample(list(i for i in range(len(filtered_samples))), self.K)
+            
+            sampled_sents, sampled_e1_e2_starts = [], []
+            for sampled_idx in sampled_idxs:
+                sampled_sent = filtered_samples['sents'].iloc[sampled_idx]
+                sampled_e1_e2_start = filtered_samples['e1_e2_start'].iloc[sampled_idx]
+                
+                assert filtered_samples['labels'].iloc[sampled_idx] == r
+                
+                sampled_sents.append(sampled_sent)
+                sampled_e1_e2_starts.append(sampled_e1_e2_start)
+            
+            meta_train_input.append(torch.LongTensor(sampled_sents).squeeze())
+            e1_e2_start.append(sampled_e1_e2_starts[0])
+            
+            meta_train_labels.append([sample_idx])
+            
+        meta_test_input = self.df['sents'].iloc[idx]
+        meta_test_labels = [target_idx]
+        
+        e1_e2_start.append(get_e1e2_start(meta_test_input, e1_id=self.e1_id, e2_id=self.e2_id))
+        e1_e2_start = torch.LongTensor(e1_e2_start).squeeze()
+        
+        meta_input = meta_train_input + [torch.LongTensor(meta_test_input)]
+        meta_labels = meta_train_labels + [meta_test_labels]
+        meta_input_padded = pad_sequence(meta_input, batch_first=True, padding_value=self.seq_pad_value).squeeze()
+        return meta_input_padded, e1_e2_start, torch.LongTensor(meta_labels).squeeze()
+
+def load_dataloaders(args):
+    if args.model_no == 0:
+        from ..model.BERT.tokenization_bert import BertTokenizer as Tokenizer
+        model = args.model_size#'bert-large-uncased' 'bert-base-uncased'
+        lower_case = True
+        model_name = 'BERT'
+    elif args.model_no == 1:
+        from ..model.ALBERT.tokenization_albert import AlbertTokenizer as Tokenizer
+        model = args.model_size #'albert-base-v2'
+        lower_case = True
+        model_name = 'ALBERT'
+    elif args.model_no == 2:
+        from ..model.BERT.tokenization_bert import BertTokenizer as Tokenizer
+        model = 'bert-base-uncased'
+        lower_case = False
+        model_name = 'BioBERT'
+        
+    if os.path.isfile("./data/%s_tokenizer.pkl" % model_name):
+        tokenizer = load_pickle("%s_tokenizer.pkl" % model_name)
+        logger.info("Loaded tokenizer from pre-trained blanks model")
+    else:
+        logger.info("Pre-trained blanks tokenizer not found, initializing new tokenizer...")
+        if args.model_no == 2:
+            tokenizer = Tokenizer(vocab_file='./additional_models/biobert_v1.1_pubmed/vocab.txt',
+                                  do_lower_case=False)
+        else:
+            tokenizer = Tokenizer.from_pretrained(model, do_lower_case=False)
+        tokenizer.add_tokens(['[E1]', '[/E1]', '[E2]', '[/E2]', '[BLANK]'])
+
+        save_as_pickle("%s_tokenizer.pkl" % model_name, tokenizer)
+        logger.info("Saved %s tokenizer at ./data/%s_tokenizer.pkl" %(model_name, model_name))
+    
+    e1_id = tokenizer.convert_tokens_to_ids('[E1]')
+    e2_id = tokenizer.convert_tokens_to_ids('[E2]')
+    print("e1_id, e2_id = ", str(e1_id), str(e2_id))
+    assert e1_id != e2_id != 1
+    
+    if args.task == 'semeval':
+        relations_path = './data/relations.pkl'
+        train_path = './data/df_train.pkl'
+        test_path = './data/df_test.pkl'
+        if os.path.isfile(relations_path) and os.path.isfile(train_path) and os.path.isfile(test_path):
+            rm = load_pickle('relations.pkl')
+            df_train = load_pickle('df_train.pkl')
+            df_test = load_pickle('df_test.pkl')
+            logger.info("Loaded preproccessed data.")
+        else:
+            df_train, df_test, rm = preprocess_semeval2010_8(args)
+            print(df_train, df_test, rm)
+        
+        train_set = semeval_dataset(df_train, tokenizer=tokenizer, e1_id=e1_id, e2_id=e2_id)
+        test_set = semeval_dataset(df_test, tokenizer=tokenizer, e1_id=e1_id, e2_id=e2_id)
+        train_length = len(train_set); test_length = len(test_set)
+        PS = Pad_Sequence(seq_pad_value=tokenizer.pad_token_id,\
+                          label_pad_value=tokenizer.pad_token_id,\
+                          label2_pad_value=-1)
+        print(train_set.df['input'], test_set.df['input'], train_set.df['e1_e2_start'], test_set.df['e1_e2_start'], PS.seq_pad_value, '---', PS.label_pad_value, '---', PS.label2_pad_value)
+        train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, \
+                                  num_workers=0, collate_fn=PS, pin_memory=False)
+        test_loader = DataLoader(test_set, batch_size=args.batch_size, shuffle=True, \
+                                  num_workers=0, collate_fn=PS, pin_memory=False)
+    elif args.task == 'fewrel':
+        df_train, df_test = preprocess_fewrel(args, do_lower_case=lower_case)
+        train_loader = fewrel_dataset(df_train, tokenizer=tokenizer, seq_pad_value=tokenizer.pad_token_id,
+                                      e1_id=e1_id, e2_id=e2_id)
+        train_length = len(train_loader)
+        test_loader, test_length = None, None
+        
+    return train_loader, test_loader, train_length, test_length

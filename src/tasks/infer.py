@@ -80,7 +80,13 @@ class infer_from_trained(object):
                                                  model_size='bert-base-uncased',
                                                  task='classification',\
                                                  n_classes_=self.args.num_classes)
-        
+        elif args.model_no == 3: # Bert for chinese
+            # from ..model.transformers.modeling_bert import BertModel, BertConfig
+            # config = BertConfig.from_pretrained('/home/diske/ivenwang/data/prev_trained_model/bert-base')
+            # tokenizer = tokenizer_class.from_pretrained('/home/diske/ivenwang/data/prev_trained_model/bert-base')
+            from ..model.BERT.modeling_bert import BertModel as Model
+            net = Model.from_pretrained('/home/diske/ivenwang/data/prev_trained_model/bert-base/',force_download=False, model_size=args.model_size, task='classification' if args.task != 'fewrel' else 'fewrel', n_classes_=args.num_classes)
+            model_name = 'Bert-chinese'
         self.tokenizer = load_pickle("%s_tokenizer.pkl" % model_name)
         self.net.resize_token_embeddings(len(self.tokenizer))
         if self.cuda:

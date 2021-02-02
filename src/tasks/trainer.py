@@ -65,7 +65,13 @@ def train_and_fit(args):
                                           model_size='bert-base-uncased',
                                           task='classification' if args.task != 'fewrel' else 'fewrel',\
                                           n_classes_=args.num_classes)
-    
+    elif args.model_no == 3: # Bert for chinese
+        # from ..model.transformers.modeling_bert import BertModel, BertConfig
+        # config = BertConfig.from_pretrained('/home/diske/ivenwang/data/prev_trained_model/bert-base')
+        # tokenizer = tokenizer_class.from_pretrained('/home/diske/ivenwang/data/prev_trained_model/bert-base')
+        from ..model.BERT.modeling_bert import BertModel as Model
+        net = Model.from_pretrained('/home/diske/ivenwang/data/prev_trained_model/bert-base/',force_download=False, model_size=args.model_size, task='classification' if args.task != 'fewrel' else 'fewrel', n_classes_=args.num_classes)
+        model_name = 'Bert-chinese'
     tokenizer = load_pickle("%s_tokenizer.pkl" % model_name)
     net.resize_token_embeddings(len(tokenizer))
     e1_id = tokenizer.convert_tokens_to_ids('[E1]')
@@ -76,7 +82,7 @@ def train_and_fit(args):
         net.cuda()
         
     logger.info("FREEZING MOST HIDDEN LAYERS...")
-    if args.model_no == 0:
+    if args.model_no == 0 or args.model_no == 3:
         unfrozen_layers = ["classifier", "pooler", "encoder.layer.11", \
                            "classification_layer", "blanks_linear", "lm_linear", "cls"]
     elif args.model_no == 1:
@@ -141,8 +147,8 @@ def train_and_fit(args):
                 attention_mask = attention_mask.cuda()
                 token_type_ids = token_type_ids.cuda()
                 
-            classification_logits = net(x, token_type_ids=token_type_ids, attention_mask=attention_mask, Q=None,\
-                          e1_e2_start=e1_e2_start)
+            classification_logits = net(x, token_type_ids=token_type_ids, attention_mask=attention_mask, Q=None, e1_e2_start=e1_e2_start)
+            # classification_logits = net(x, token_type_ids=token_type_ids, attention_mask=attention_mask, e1_e2_start=e1_e2_start)
             
             #return classification_logits, labels, net, tokenizer # for debugging now
             

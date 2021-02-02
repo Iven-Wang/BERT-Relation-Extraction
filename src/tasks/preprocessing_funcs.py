@@ -303,7 +303,11 @@ def load_dataloaders(args):
         model = 'bert-base-uncased'
         lower_case = False
         model_name = 'BioBERT'
-        
+    elif args.model_no == 3:
+        from ..model.BERT.tokenization_bert import BertTokenizer as Tokenizer
+        model = '/home/diske/ivenwang/data/prev_trained_model/bert-base'
+        lower_case = False
+        model_name = 'Bert-chinese'
     if os.path.isfile("./data/%s_tokenizer.pkl" % model_name):
         tokenizer = load_pickle("%s_tokenizer.pkl" % model_name)
         logger.info("Loaded tokenizer from pre-trained blanks model")
@@ -351,5 +355,7 @@ def load_dataloaders(args):
                                       e1_id=e1_id, e2_id=e2_id)
         train_length = len(train_loader)
         test_loader, test_length = None, None
-        
+    elif args.task == 'elec':
+        pass
+
     return train_loader, test_loader, train_length, test_length

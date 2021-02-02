@@ -10,7 +10,7 @@ from src.tasks.infer import infer_from_trained, FewRel
 import logging
 from argparse import ArgumentParser
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+os.environ["CUDA_VISIBLE_DEVICES"] = '3'
 
 '''
 This fine-tunes the BERT model on SemEval, FewRel tasks
@@ -22,7 +22,7 @@ logger = logging.getLogger('__file__')
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--task", type=str, default='semeval', help='semeval, fewrel')
+    parser.add_argument("--task", type=str, default='semeval', help='semeval, fewrel, elec(chinese)')
     parser.add_argument("--train_data", type=str, default='./data/SemEval2010_task8_all_data/SemEval2010_task8_training/TRAIN_FILE.TXT', \
                         help="training data .txt file path")
     parser.add_argument("--test_data", type=str, default='./data/SemEval2010_task8_all_data/SemEval2010_task8_testing_keys/TEST_FILE_FULL.TXT', \
@@ -35,9 +35,10 @@ if __name__ == "__main__":
     parser.add_argument("--fp16", type=int, default=0, help="1: use mixed precision ; 0: use floating point 32") # mixed precision doesn't seem to train well
     parser.add_argument("--num_epochs", type=int, default=11, help="No of epochs")
     parser.add_argument("--lr", type=float, default=0.00007, help="learning rate")
-    parser.add_argument("--model_no", type=int, default=0, help='''Model ID: 0 - BERT\n
+    parser.add_argument("--model_no", type=int, default=3, help='''Model ID: 0 - BERT\n
                                                                             1 - ALBERT\n
-                                                                            2 - BioBERT''')
+                                                                            2 - BioBERT\n
+                                                                            3 - Bert-chinese''')
     parser.add_argument("--model_size", type=str, default='bert-base-uncased', help="For BERT: 'bert-base-uncased', \
                                                                                                 'bert-large-uncased',\
                                                                                     For ALBERT: 'albert-base-v2',\

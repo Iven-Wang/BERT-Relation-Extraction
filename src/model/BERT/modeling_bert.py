@@ -762,7 +762,6 @@ class BertModel(BertPreTrainedModel):
             return v1v2
 
         #outputs = (sequence_output, pooled_output,) + encoder_outputs[1:]  # add hidden_states and attentions if they are here
-        
 
 
 @add_start_docstrings("""Bert Model with two heads on top as done during the pre-training:

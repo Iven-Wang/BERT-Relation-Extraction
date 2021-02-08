@@ -22,13 +22,14 @@ logger = logging.getLogger('__file__')
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--task", type=str, default='semeval', help='semeval, fewrel, elec(chinese)')
+    parser.add_argument("--task", type=str, default='elec', help='semeval, fewrel, elec(chinese)')
+    # parser.add_argument("--task", type=str, default='semeval', help='semeval, fewrel, elec(chinese)')
     parser.add_argument("--train_data", type=str, default='./data/SemEval2010_task8_all_data/SemEval2010_task8_training/TRAIN_FILE.TXT', \
                         help="training data .txt file path")
     parser.add_argument("--test_data", type=str, default='./data/SemEval2010_task8_all_data/SemEval2010_task8_testing_keys/TEST_FILE_FULL.TXT', \
                         help="test data .txt file path")
     parser.add_argument("--use_pretrained_blanks", type=int, default=0, help="0: Don't use pre-trained blanks model, 1: use pre-trained blanks model")
-    parser.add_argument("--num_classes", type=int, default=19, help='number of relation classes')
+    parser.add_argument("--num_classes", type=int, default=7, help='number of relation classes')
     parser.add_argument("--batch_size", type=int, default=64, help="Training batch size")
     parser.add_argument("--gradient_acc_steps", type=int, default=2, help="No. of steps of gradient accumulation")
     parser.add_argument("--max_norm", type=float, default=1.0, help="Clipped gradient norm")
@@ -51,7 +52,6 @@ if __name__ == "__main__":
     
     if (args.train == 1) and (args.task != 'fewrel'):
         net = train_and_fit(args)
-        
     if (args.infer == 1) and (args.task != 'fewrel'):
         inferer = infer_from_trained(args, detect_entities=True)
         test = "The surprise [E1]visit[/E1] caused a [E2]frenzy[/E2] on the already chaotic trading floor."

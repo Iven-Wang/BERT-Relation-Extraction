@@ -64,6 +64,19 @@ def evaluate_(output, labels, ignore_idx):
     o_labels = torch.softmax(output, dim=1).max(1)[1]
     l = labels.squeeze()[idxs]; o = o_labels[idxs]
 
+    '''
+    print(idxs, "idxs")
+    tensor([False,  True,  True, False,  True,  True, False,  True,  True, False,
+         True,  True,  True,  True,  True,  True,  True,  True,  True,  True,
+         True,  True,  True,  True,  True,  True,  True,  True, False,  True,
+         True,  True, False, False,  True,  True, False,  True,  True,  True,
+         True,  True,  True,  True,  True,  True, False, False, False,  True,
+         True, False,  True,  True, False, False,  True,  True,  True,  True,
+         True,  True,  True,  True], device='cuda:0')
+    '''
+
+    # TODO 1. classification_logits 看看形状 2. idxs true 是不是太多了
+
     if len(idxs) > 1:
         acc = (l == o).sum().item()/len(idxs)
     else:
@@ -71,7 +84,32 @@ def evaluate_(output, labels, ignore_idx):
     l = l.cpu().numpy().tolist() if l.is_cuda else l.numpy().tolist()
     o = o.cpu().numpy().tolist() if o.is_cuda else o.numpy().tolist()
 
+    # print(idxs, "idxs")
+    # print(o)
+    # print(l)
+
     return acc, (o, l)
+
+# 这个函数还没使用，也还不知道对错，TODO
+def cal_prf(true_labels, out_labels):
+    tp, tn, fp, fn = 0, 0, 0, 0
+    for i in range(len(true_labels)):
+        if true_labels[i] == out_labels[i]:
+            if true_labels[i] != '0':
+                tp += 1
+            else:
+                tn += 1
+        else:
+            if true_labels[i] != '0':
+                fn += 1
+            elif out_labels[i] != '0':
+                fp += 1
+    p = tp / (tp+fp)
+    r = tp / (tp+fn)
+    f = 2 * p * r / (p+r)
+
+    return p, r, f
+
 
 def evaluate_results(net, test_loader, pad_id, cuda):
     logger.info("Evaluating test samples...")
@@ -80,7 +118,9 @@ def evaluate_results(net, test_loader, pad_id, cuda):
     with torch.no_grad():
         for i, data in tqdm(enumerate(test_loader), total=len(test_loader)):
             x, e1_e2_start, labels, _,_,_ = data
+            # print(x, e1_e2_start, labels)
             attention_mask = (x != pad_id).float()
+            # print(attention_mask)
             token_type_ids = torch.zeros((x.shape[0], x.shape[1])).long()
 
             if cuda:
@@ -94,7 +134,9 @@ def evaluate_results(net, test_loader, pad_id, cuda):
             
             accuracy, (o, l) = evaluate_(classification_logits, labels, ignore_idx=-1)
             out_labels.append([str(i) for i in o]); true_labels.append([str(i) for i in l])
+            # out_labels += [str(i) for i in o]; true_labels += [str(i) for i in l]
             acc += accuracy
+        print(accuracy, out_labels, true_labels)
     
     accuracy = acc/(i + 1)
     results = {

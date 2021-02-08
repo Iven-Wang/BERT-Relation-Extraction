@@ -95,10 +95,10 @@ def train_and_fit(args):
         
     for name, param in net.named_parameters():
         if not any([layer in name for layer in unfrozen_layers]):
-            print("[FROZE]: %s" % name)
+            # print("[FROZE]: %s" % name)
             param.requires_grad = False
         else:
-            print("[FREE]: %s" % name)
+            # print("[FREE]: %s" % name)
             param.requires_grad = True
     
     if args.use_pretrained_blanks == 1:
@@ -172,7 +172,8 @@ def train_and_fit(args):
             
             total_loss += loss.item()
             total_acc += evaluate_(classification_logits, labels, \
-                                   ignore_idx=-1)[0]
+                                   ignore_idx=0)[0]
+                                #    ignore_idx=-1)[0]
             
             if (i % update_size) == (update_size - 1):
                 losses_per_batch.append(args.gradient_acc_steps*total_loss/update_size)

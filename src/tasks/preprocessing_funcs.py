@@ -9,6 +9,7 @@ import os
 import re
 import random
 import copy
+import time
 import pandas as pd
 import json
 import torch
@@ -17,6 +18,7 @@ from torch.nn.utils.rnn import pad_sequence
 from ..misc import save_as_pickle, load_pickle
 from tqdm import tqdm
 import logging
+import numpy as np
 
 tqdm.pandas(desc="prog_bar")
 logging.basicConfig(format='%(asctime)s [%(levelname)s]: %(message)s', \
@@ -45,6 +47,8 @@ def process_text(text, mode='train'):
         sent = re.sub('<e2>', '[E2]', sent)
         sent = re.sub('</e2>', '[/E2]', sent)
         sents.append(sent); relations.append(relation), comments.append(comment); blanks.append(blank)
+    # print(sents, relations, comments, blanks)
+    # time.sleep(10)
     return sents, relations, comments, blanks
 
 def preprocess_semeval2010_8(args):
@@ -66,9 +70,10 @@ def preprocess_semeval2010_8(args):
     
     sents, relations, comments, blanks = process_text(text, 'test')
     df_test = pd.DataFrame(data={'sents': sents, 'relations': relations})
-    
+
     rm = Relations_Mapper(df_train['relations'])
     save_as_pickle('relations.pkl', rm)
+    # print(rm.rel2idx, rm.idx2rel, df_train, df_test)
     df_test['relations_id'] = df_test.progress_apply(lambda x: rm.rel2idx[x['relations']], axis=1)
     df_train['relations_id'] = df_train.progress_apply(lambda x: rm.rel2idx[x['relations']], axis=1)
     save_as_pickle('df_train.pkl', df_train)
@@ -121,6 +126,7 @@ class Pad_Sequence():
                 x_lengths, y_lengths, y2_lengths
 
 def get_e1e2_start(x, e1_id, e2_id):
+    #TODO 对于电力数据还有 bug 应该用 json 里面起始位置的转换
     try:
         e1_e2_start = ([i for i, e in enumerate(x) if e == e1_id][0],\
                         [i for i, e in enumerate(x) if e == e2_id][0])
@@ -287,6 +293,63 @@ class fewrel_dataset(Dataset):
         meta_input_padded = pad_sequence(meta_input, batch_first=True, padding_value=self.seq_pad_value).squeeze()
         return meta_input_padded, e1_e2_start, torch.LongTensor(meta_labels).squeeze()
 
+def preprocess_elec(args, repeat_num=50):
+    '''
+    电力图谱数据预处理
+    repeat_num：由于样本不均衡，在训练集中将非 none 的样本重复 repeat_num 次
+    '''
+    #TODO 可以考虑把之前的切分的代码 import 到这里来运行
+    data_path = '/home/diske/ivenwang/code/2011elec/data/alldata.json'
+    # data_path = '/home/diske/ivenwang/code/2011elec/data/alldata_r.json'
+    logger.info("Reading training file %s..." % data_path)
+    with open(data_path, 'r', encoding='utf8') as f:
+        text = f.readlines()
+    print(len(text))
+    sents, rels = [], []
+    for line in text:
+        j = json.loads(line)
+        sent, hs, he, ts, te, rel = j['sentence'], j['head_start'], j['head_end'], j['tail_start'], j['tail_end'], j['rel']
+        if hs < ts:
+            s = sent[:hs] + '[E1]' + sent[hs:he] + '[/E1]' + sent[he:ts] + '[E2]' + sent[ts:te] + '[/E2]' + sent[te:]
+            sents.append(s)
+            if rel != 'none':
+                rels.append(rel+'(e1,e2)')
+            else:
+                rels.append(rel)
+        else: # 头实体在尾实体后面
+            s = sent[:ts] + '[E2]' + sent[ts:te] + '[/E2]' + sent[te:hs] + '[E1]' + sent[hs:he] + '[/E1]' + sent[he:]
+            sents.append(s)
+            if rel != 'none':
+                rels.append(rel+'(e2,e1)')
+            else:
+                rels.append(rel)
+    
+    total_num = len(rels)
+    split_lst = np.random.randint(10,size=total_num) 
+    train_sents, train_rels, test_sents, test_tels = [], [], [], []
+    for i in range(total_num):
+        if split_lst[i] < 8: # 按照 8：2 划分 train 和 test
+            train_sents.append(sents[i])
+            train_rels.append(rels[i])
+            if rels[i] != 'none':
+                for _ in range(repeat_num):
+                    train_sents.append(sents[i])
+                    train_rels.append(rels[i])
+        else:
+            test_sents.append(sents[i])
+            test_tels.append(rels[i])
+    df_train = pd.DataFrame(data={'sents': train_sents, 'relations': train_rels})
+    df_test = pd.DataFrame(data={'sents': test_sents, 'relations': test_tels})
+    rm = Relations_Mapper(df_train['relations'])
+    # print(split_lst, rm.rel2idx, rm.idx2rel, df_train, df_test, '------')
+    df_test['relations_id'] = df_test.progress_apply(lambda x: rm.rel2idx[x['relations']], axis=1)
+    df_train['relations_id'] = df_train.progress_apply(lambda x: rm.rel2idx[x['relations']], axis=1)
+    save_as_pickle('df_train_elec.pkl', df_train)
+    save_as_pickle('df_test_elec.pkl', df_test)
+    save_as_pickle('relations_elec.pkl', rm)
+    return df_train, df_test, rm
+
+
 def load_dataloaders(args):
     if args.model_no == 0:
         from ..model.BERT.tokenization_bert import BertTokenizer as Tokenizer
@@ -331,7 +394,7 @@ def load_dataloaders(args):
         relations_path = './data/relations.pkl'
         train_path = './data/df_train.pkl'
         test_path = './data/df_test.pkl'
-        if os.path.isfile(relations_path) and os.path.isfile(train_path) and os.path.isfile(test_path):
+        if os.path.isfile(relations_path) and os.path.isfile(train_path) and os.path.isfile(test_path) and 0:
             rm = load_pickle('relations.pkl')
             df_train = load_pickle('df_train.pkl')
             df_test = load_pickle('df_test.pkl')
@@ -342,6 +405,10 @@ def load_dataloaders(args):
         train_set = semeval_dataset(df_train, tokenizer=tokenizer, e1_id=e1_id, e2_id=e2_id)
         test_set = semeval_dataset(df_test, tokenizer=tokenizer, e1_id=e1_id, e2_id=e2_id)
         train_length = len(train_set); test_length = len(test_set)
+        pd.set_option('display.max_columns', 1000)
+        pd.set_option('display.width', 1000)
+        print(df_train, df_test, train_set.e1_id, train_set.e2_id, train_set.df, '-------')
+        time.sleep(100)
         PS = Pad_Sequence(seq_pad_value=tokenizer.pad_token_id,\
                           label_pad_value=tokenizer.pad_token_id,\
                           label2_pad_value=-1)
@@ -356,6 +423,30 @@ def load_dataloaders(args):
         train_length = len(train_loader)
         test_loader, test_length = None, None
     elif args.task == 'elec':
-        pass
-
+        relations_path = './data/relations_elec.pkl'
+        train_path = './data/df_train_elec.pkl'
+        test_path = './data/df_test_elec.pkl'
+        if os.path.isfile(relations_path) and os.path.isfile(train_path) and os.path.isfile(test_path) and 0:
+            rm = load_pickle('relations_elec.pkl')
+            df_train = load_pickle('df_train_elec.pkl')
+            df_test = load_pickle('df_test_elec.pkl')
+            logger.info("Loaded preproccessed data.")
+        else:
+            df_train, df_test, rm = preprocess_elec(args)
+        train_set = semeval_dataset(df_train, tokenizer=tokenizer, e1_id=e1_id, e2_id=e2_id)
+        test_set = semeval_dataset(df_test, tokenizer=tokenizer, e1_id=e1_id, e2_id=e2_id)
+        train_length = len(train_set); test_length = len(test_set)
+        pd.set_option('display.max_columns', 1000)
+        pd.set_option('display.width', 1000)
+        pd.set_option('display.width', 1000)
+        # print(train_set.e1_id, train_set.e2_id, train_set.df, '-------')
+        # time.sleep(100)
+        PS = Pad_Sequence(seq_pad_value=tokenizer.pad_token_id,\
+                          label_pad_value=tokenizer.pad_token_id,\
+                          label2_pad_value=-1)
+        train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, \
+                                  num_workers=0, collate_fn=PS, pin_memory=False)
+        test_loader = DataLoader(test_set, batch_size=args.batch_size, shuffle=True, \
+                                  num_workers=0, collate_fn=PS, pin_memory=False)
+    # print(len(train_loader), len(test_loader), '-----')
     return train_loader, test_loader, train_length, test_length
